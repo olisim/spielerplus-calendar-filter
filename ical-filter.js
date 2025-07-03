@@ -1000,7 +1000,8 @@ class ICalFilter {
           location: event.location,
           url: event.url,
           status: event.status,
-          sequence: Math.floor(Date.now() / 1000) // Unix timestamp to force updates
+          sequence: Math.floor(Date.now() / 1000), // Unix timestamp to force updates
+          timezone: 'Europe/Berlin'
         });
       });
 
