@@ -1025,11 +1025,6 @@ class ICalFilter {
       });
       
       filteredEvents.forEach(event => {
-        // Debug: Log timezone info
-        console.log(`Server timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
-        console.log(`Event start original: ${event.start.toISOString()} (${event.start.toString()})`);
-        console.log(`Event start getHours(): ${event.start.getHours()}`);
-        
         // Create new Date objects that represent the local time without timezone conversion
         const startLocal = new Date(
           event.start.getFullYear(),
@@ -1048,9 +1043,6 @@ class ICalFilter {
           event.end.getMinutes(),
           event.end.getSeconds()
         );
-        
-        console.log(`Created local start: ${startLocal.toString()}`);
-        console.log(`Created local start getHours(): ${startLocal.getHours()}`);
         
         filteredCalendar.createEvent({
           id: event.uid,
