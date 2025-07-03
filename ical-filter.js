@@ -109,8 +109,10 @@ class ICalFilter {
       const $ = cheerio.load(response.data);
       
       // Check for "Nicht nominiert" text
-      const hasNotNominated = $('body').text().includes('Nicht nominiert');
-      if (hasNotNominated) {
+      const bodyText = $('body').text();
+      const hasNichtNominiert = bodyText.includes('Nicht nominiert');
+      
+      if (hasNichtNominiert) {
         return {
           nominated: false,
           attending: false,
@@ -119,37 +121,53 @@ class ICalFilter {
         };
       }
 
-      // Find attendance buttons
-      const attendanceButtons = $('.btn-attendance, .attendance-btn, [class*="attendance"]');
-      const selectedButton = attendanceButtons.filter('.selected, .active, [class*="selected"]');
+      // Find all attendance buttons with broader selectors
+      const attendanceButtons = $('button[class*="btn"], .btn, input[type="button"], [class*="participation"], [class*="attendance"], [data-value]');
+      const disabledButtons = attendanceButtons.filter(':disabled, [disabled]');
+      const hasSelectedButton = attendanceButtons.filter('.selected, .active, [class*="selected"], [class*="primary"]').length > 0;
       
-      if (selectedButton.length === 0) {
+      // Check if all buttons are disabled but there's a selection
+      if (disabledButtons.length === attendanceButtons.length && !hasSelectedButton) {
         return {
-          nominated: true,
+          nominated: false,
           attending: false,
-          status: 'no_response',
-          emoji: '🤷'
+          status: 'not_nominated',
+          emoji: '❌'
         };
       }
 
-      // Determine status based on selected button
-      const buttonText = selectedButton.text().toLowerCase();
-      if (buttonText.includes('zusage') || buttonText.includes('ja')) {
-        return {
+      // Look for specific attendance indicators
+      let foundStatus = null;
+      
+      // Check for positive attendance (thumbs up, yes, attending)
+      if (bodyText.includes('👍') || 
+          $('[class*="thumbs-up"], [class*="yes"], [class*="attending"], .btn-success.selected, .btn-primary.selected').length > 0 ||
+          attendanceButtons.filter('.selected, .active').text().toLowerCase().includes('zusage')) {
+        foundStatus = {
           nominated: true,
           attending: true,
           status: 'attending',
           emoji: '👍'
         };
-      } else if (buttonText.includes('absage') || buttonText.includes('nein')) {
-        return {
+      }
+      
+      // Check for negative attendance (thumbs down, no, not attending)
+      else if (bodyText.includes('👎') || 
+               $('[class*="thumbs-down"], [class*="no"], [class*="not-attending"], .btn-danger.selected').length > 0 ||
+               attendanceButtons.filter('.selected, .active').text().toLowerCase().includes('absage')) {
+        foundStatus = {
           nominated: true,
           attending: false,
           status: 'not_attending',
           emoji: '👎'
         };
-      } else if (buttonText.includes('vielleicht') || buttonText.includes('maybe')) {
-        return {
+      }
+      
+      // Check for maybe/uncertain
+      else if (bodyText.includes('❓') || bodyText.includes('?') ||
+               $('[class*="maybe"], [class*="uncertain"], .btn-warning.selected').length > 0 ||
+               attendanceButtons.filter('.selected, .active').text().toLowerCase().includes('vielleicht')) {
+        foundStatus = {
           nominated: true,
           attending: false,
           status: 'maybe',
@@ -157,12 +175,18 @@ class ICalFilter {
         };
       }
 
+      if (foundStatus) {
+        return foundStatus;
+      }
+
+      // Default fallback
       return {
         nominated: true,
         attending: false,
         status: 'no_response',
         emoji: '🤷'
       };
+      
     } catch (error) {
       return {
         nominated: true,
