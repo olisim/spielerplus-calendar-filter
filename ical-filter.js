@@ -1025,12 +1025,31 @@ class ICalFilter {
       });
       
       filteredEvents.forEach(event => {
+        // Create new Date objects that represent the local time without timezone conversion
+        const startLocal = new Date(
+          event.start.getFullYear(),
+          event.start.getMonth(),
+          event.start.getDate(),
+          event.start.getHours(),
+          event.start.getMinutes(),
+          event.start.getSeconds()
+        );
+        
+        const endLocal = new Date(
+          event.end.getFullYear(),
+          event.end.getMonth(),
+          event.end.getDate(),
+          event.end.getHours(),
+          event.end.getMinutes(),
+          event.end.getSeconds()
+        );
+        
         filteredCalendar.createEvent({
           id: event.uid,
           summary: event.summary,
           description: event.description,
-          start: event.start,
-          end: event.end,
+          start: startLocal,
+          end: endLocal,
           location: event.location,
           url: event.url,
           status: event.status,
