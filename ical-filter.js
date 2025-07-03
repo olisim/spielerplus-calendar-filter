@@ -829,7 +829,6 @@ class ICalFilter {
       const filteredCalendar = icalGenerator({
         name: teamName,
         description: `Calendar with attendance status indicators`,
-        timezone: 'Europe/Berlin',
         prodId: {
           company: 'SpielerPlus Filter',
           product: 'Calendar Filter'
@@ -925,7 +924,6 @@ class ICalFilter {
       const filteredCalendar = icalGenerator({
         name: teamName,
         description: `Calendar with attendance status indicators`,
-        timezone: 'Europe/Berlin',
         prodId: {
           company: 'SpielerPlus Filter',
           product: 'Calendar Filter'
