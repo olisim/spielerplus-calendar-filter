@@ -2,6 +2,9 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// Set timezone to Europe/Berlin to match SpielerPlus
+process.env.TZ = 'Europe/Berlin';
+
 const ICalFilter = require('./ical-filter');
 
 const app = express();
