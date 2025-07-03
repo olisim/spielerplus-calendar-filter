@@ -15,9 +15,8 @@ const filterInstances = new Map();
 
 app.use(cors());
 
-// Helper function to parse HTTP Basic Auth
 function parseBasicAuth(authHeader) {
-  if (!authHeader || !authHeader.startsWith('Basic ')) {
+  if (!authHeader?.startsWith('Basic ')) {
     return null;
   }
   
@@ -49,46 +48,24 @@ app.get('/', (req, res) => {
         <div class="info-box">
             <h3>📅 Calendar URL format:</h3>
             <div class="calendar-url">
-                http://localhost:${PORT}/calendar/ICAL_TOKEN?u=USER_ID&name=TEAM_NAME
+                http://localhost:${PORT}/calendar/ICAL_TOKEN?u=USER_ID&name=TEAM_NAME&showNotNominated=true
             </div>
         </div>
         
         <h3>🔧 Setup Instructions:</h3>
         
         <div class="step">
-            <strong>1. Get your iCal URL:</strong> From your existing SpielerPlus calendar URL 
-            <code>https://www.spielerplus.de/events/ics?t=TOKEN&u=USER_ID</code>, 
+            <strong>1. Get your iCal URL:</strong> From your SpielerPlus calendar subscription URL, 
             copy both the <strong>TOKEN</strong> (after <code>t=</code>) and <strong>USER_ID</strong> (after <code>u=</code>)
         </div>
         
         <div class="step">
-            <strong>2. Replace ICAL_TOKEN:</strong> Use the token from step 1
+            <strong>2. Create your filtered URL:</strong> Replace ICAL_TOKEN and USER_ID with your values
         </div>
         
         <div class="step">
-            <strong>3. Replace USER_ID:</strong> Use the user ID from step 1
+            <strong>3. Add to calendar app:</strong> Use your <strong>SpielerPlus username and password</strong> when prompted for authentication
         </div>
-        
-        <div class="step">
-            <strong>4. Replace TEAM_NAME:</strong> Choose a name for your calendar (optional)
-        </div>
-        
-        <div class="step">
-            <strong>5. Add to your calendar app:</strong>
-            <ul>
-                <li>Copy the URL with your token, user ID, and team name</li>
-                <li>Add as "Calendar Subscription" or "Internet Calendar"</li>
-                <li>When prompted for credentials, use your <strong>SpielerPlus username and password</strong></li>
-            </ul>
-        </div>
-        
-        <h3>📱 Calendar App Instructions:</h3>
-        <ul>
-            <li><strong>iOS Calendar:</strong> Settings → Accounts → Add Account → Other → Add Subscribed Calendar</li>
-            <li><strong>Google Calendar:</strong> Settings → Add calendar → From URL → Enable authentication</li>
-            <li><strong>Outlook:</strong> Add calendar → Subscribe from web → Enter URL and credentials</li>
-            <li><strong>Apple Calendar (Mac):</strong> File → New Calendar Subscription</li>
-        </ul>
         
         <h3>😊 Emoji Meanings:</h3>
         <ul>
@@ -99,13 +76,11 @@ app.get('/', (req, res) => {
             <li><span class="emoji">❌</span> You're not nominated</li>
         </ul>
         
-        <h3>📝 Example:</h3>
-        <p>If your SpielerPlus iCal URL is:<br>
-        <code>https://www.spielerplus.de/events/ics?t=YOUR_ICAL_TOKEN&u=YOUR_USER_ID</code></p>
-        <p>Your filtered calendar URL would be:</p>
-        <div class="calendar-url">
-            http://localhost:${PORT}/calendar/YOUR_ICAL_TOKEN?u=YOUR_USER_ID&name=YOUR_TEAM_NAME
-        </div>
+        <h3>📝 Parameters:</h3>
+        <ul>
+            <li><strong>showNotNominated=true</strong> - Include events where you're not nominated (default: false)</li>
+            <li><strong>name=TEAM_NAME</strong> - Custom calendar name (optional)</li>
+        </ul>
     </body>
     </html>
   `);
@@ -113,10 +88,8 @@ app.get('/', (req, res) => {
 
 app.get('/calendar/:icalToken', async (req, res) => {
   try {
-    // Check for HTTP Basic Authentication
-    const authHeader = req.headers.authorization;
-    const credentials = parseBasicAuth(authHeader);
-    
+    // Parse and validate authentication
+    const credentials = parseBasicAuth(req.headers.authorization);
     if (!credentials) {
       res.set('WWW-Authenticate', 'Basic realm="SpielerPlus Calendar Filter"');
       return res.status(401).json({ 
@@ -125,21 +98,23 @@ app.get('/calendar/:icalToken', async (req, res) => {
       });
     }
 
+    // Extract and validate parameters
     const { icalToken } = req.params;
+    const userParam = req.query.u;
     const teamName = req.query.name || 'Team Calendar';
-    const userParam = req.query.u; // Get user parameter from URL query
-    const showNotNominated = req.query.showNotNominated === 'true'; // Get showNotNominated parameter
+    const showNotNominated = req.query.showNotNominated === 'true';
     
     if (!userParam) {
       return res.status(400).json({
         error: 'Missing user parameter',
-        message: 'Please include the user parameter: ?u=YOUR_USER_ID&name=TEAM_NAME&showNotNominated=true (optional)'
+        message: 'Please include the user parameter: ?u=YOUR_USER_ID'
       });
     }
     
+    // Build original iCal URL
     const originalIcalUrl = `https://www.spielerplus.de/events/ics?t=${icalToken}&u=${userParam}`;
     
-    // Create or reuse filter instance for this user
+    // Get or create filter instance for this user
     const userKey = `${credentials.username}:${icalToken}`;
     let filter = filterInstances.get(userKey);
     
@@ -148,12 +123,19 @@ app.get('/calendar/:icalToken', async (req, res) => {
       filterInstances.set(userKey, filter);
     }
     
-    // Use HTTP Basic Auth approach instead of session login
-    const filteredIcal = await filter.filterCalendarWithBasicAuth(originalIcalUrl, teamName, credentials.username, credentials.password, showNotNominated);
+    // Generate filtered calendar
+    const filteredIcal = await filter.filterCalendarWithBasicAuth(
+      originalIcalUrl, 
+      teamName, 
+      credentials.username, 
+      credentials.password, 
+      showNotNominated
+    );
     
+    // Set response headers for calendar download
     res.set({
       'Content-Type': 'text/calendar; charset=utf-8',
-      'Content-Disposition': `attachment; filename="filtered-calendar.ics"`,
+      'Content-Disposition': 'attachment; filename="filtered-calendar.ics"',
       'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
       'Pragma': 'no-cache',
       'Expires': '0',
@@ -165,7 +147,7 @@ app.get('/calendar/:icalToken', async (req, res) => {
     
     res.send(filteredIcal);
   } catch (error) {
-    console.error('Calendar error:', error.message);
+    console.error('Calendar generation error:', error.message);
     
     if (error.message.includes('authentication') || error.message.includes('login')) {
       res.set('WWW-Authenticate', 'Basic realm="SpielerPlus Calendar Filter"');
@@ -186,6 +168,4 @@ app.listen(PORT, () => {
   console.log(`SpielerPlus Calendar Filter running on port ${PORT}`);
   console.log(`Setup page: http://localhost:${PORT}`);
   console.log(`Calendar URL format: http://localhost:${PORT}/calendar/ICAL_TOKEN?u=USER_ID&name=TEAM_NAME&showNotNominated=true`);
-  console.log(`Users authenticate with their SpielerPlus credentials via HTTP Basic Auth`);
-  console.log(`Example: http://localhost:${PORT}/calendar/YOUR_ICAL_TOKEN?u=YOUR_USER_ID&name=YOUR_TEAM_NAME&showNotNominated=true`);
 });
