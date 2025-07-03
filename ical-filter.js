@@ -932,6 +932,42 @@ class ICalFilter {
         }
       });
 
+      // Add proper VTIMEZONE definition with DST rules for Europe/Berlin
+      filteredCalendar.timezone({
+        name: 'Europe/Berlin',
+        generator: function() {
+          return [
+            'BEGIN:VTIMEZONE',
+            'TZID:Europe/Berlin',
+            'BEGIN:DAYLIGHT',
+            'DTSTART:20240703T223210',
+            'TZNAME:CEST',
+            'TZOFFSETTO:+0200',
+            'TZOFFSETFROM:+0200',
+            'END:DAYLIGHT',
+            'BEGIN:STANDARD',
+            'DTSTART:20241027T020000',
+            'TZNAME:CET',
+            'TZOFFSETTO:+0100',
+            'TZOFFSETFROM:+0200',
+            'END:STANDARD',
+            'BEGIN:DAYLIGHT',
+            'DTSTART:20250330T030000',
+            'TZNAME:CEST',
+            'TZOFFSETTO:+0200',
+            'TZOFFSETFROM:+0100',
+            'END:DAYLIGHT',
+            'BEGIN:STANDARD',
+            'DTSTART:20251026T020000',
+            'TZNAME:CET',
+            'TZOFFSETTO:+0100',
+            'TZOFFSETFROM:+0200',
+            'END:STANDARD',
+            'END:VTIMEZONE'
+          ].join('\r\n');
+        }
+      });
+
       // Process events with limited concurrency to prevent overwhelming the server
       const processedEvents = [];
       const concurrencyLimit = 1; // Process only 1 event at a time to be safe
