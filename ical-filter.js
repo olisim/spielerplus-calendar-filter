@@ -159,9 +159,10 @@ class ICalFilter {
   }
 
   parseAttendanceFromPage($, bodyText, eventUrl) {
+    // Check for "Nicht nominiert" (not nominated) text
+    const nichtNominiertText = $('.deactivated b:contains("Nicht nominiert"), b:contains("Nicht nominiert")');
+    const hasNichtNominiert = nichtNominiertText.length > 0;
     
-    // Check for "Nicht nominiert" text
-    const hasNichtNominiert = bodyText.includes('Nicht nominiert');
     if (hasNichtNominiert) {
       return {
         nominated: false,
@@ -171,145 +172,143 @@ class ICalFilter {
       };
     }
 
-    // Look for SpielerPlus participation buttons
-    const participationButtons = $('.participation-button');
-    const selectedParticipationButton = participationButtons.filter('.selected');
+    // Look for participation buttons
+    const attendanceButtons = $('.participation-button');
     
-    if (selectedParticipationButton.length > 0) {
-      const buttonText = selectedParticipationButton.text().trim();
+    if (attendanceButtons.length > 0) {
+      // Check if buttons are disabled (indicates not nominated)
+      const disabledButtons = attendanceButtons.filter('[disabled]');
+      const hasSelectedButton = attendanceButtons.filter('.selected').length > 0;
       
-      
-      // First check button value/position for attendance status
-      // Button positions often correspond to: 1=Yes, 2=Maybe, 8/3=No
-      if (buttonText === '1') {
+      // Only mark as "not nominated" if explicit "Nicht nominiert" text is found
+      // OR if all buttons are disabled AND no selection has been made
+      if (hasNichtNominiert || (disabledButtons.length === attendanceButtons.length && !hasSelectedButton)) {
         return {
-          nominated: true,
-          attending: true,
-          status: 'attending',
-          emoji: '👍'
+          nominated: false,
+          attending: false,
+          status: 'not_nominated',
+          emoji: '❌'
         };
-      } else if (buttonText === '8' || buttonText === '3') {
+      }
+      
+      // Detect specific participation status using title attributes - this is the key fix!
+      const selectedConfirm = $('.participation-button.selected[title="Zugesagt"]');
+      const selectedDecline = $('.participation-button.selected[title="Absagen / Abwesend"]');
+      const selectedMaybe = $('.participation-button.selected[title="Unsicher"]');
+      
+      if (attendanceButtons.length > 0) {
+        if (selectedConfirm.length > 0) {
+          return {
+            nominated: true,
+            attending: true,
+            status: 'attending',
+            emoji: '👍'
+          };
+        } else if (selectedDecline.length > 0) {
+          return {
+            nominated: true,
+            attending: false,
+            status: 'not_attending',
+            emoji: '👎'
+          };
+        } else if (selectedMaybe.length > 0) {
+          return {
+            nominated: true,
+            attending: false,
+            status: 'maybe',
+            emoji: '❓'
+          };
+        } else {
+          return {
+            nominated: true,
+            attending: false,
+            status: 'no_response',
+            emoji: '🤷'
+          };
+        }
+      }
+    } else {
+      // No participation buttons found - check if user is not nominated for this event
+      // Analyze page content for participation status since API endpoints don't exist
+      const pageHtml = $.html();
+      
+      // Check for specific decline patterns first
+      if (bodyText.includes('abgesagt') || bodyText.includes('absage') || 
+          bodyText.includes('nicht teilnehmen') || bodyText.includes('abwesend')) {
         return {
           nominated: true,
           attending: false,
           status: 'not_attending',
           emoji: '👎'
         };
-      } else if (buttonText === '2') {
-        return {
-          nominated: true,
-          attending: false,
-          status: 'maybe',
-          emoji: '❓'
-        };
       }
       
-      // If button value is unclear, check page text as fallback
-      if (bodyText.includes('Absage')) {
-        return {
-          nominated: true,
-          attending: false,
-          status: 'not_attending',
-          emoji: '👎'
-        };
-      }
+      // Check for data attributes, JavaScript variables, or hidden form data
+      const scriptMatches = pageHtml.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+      let foundStatusInScript = false;
       
-      if (bodyText.includes('Zusage')) {
-        return {
-          nominated: true,
-          attending: true,
-          status: 'attending',
-          emoji: '👍'
-        };
-      }
-    }
-    
-    // Look for other attendance buttons or status indicators
-    const attendanceButtons = $('button, input[type="button"], .btn');
-    
-    // Check if there are attendance-specific buttons
-    let foundAttendanceButton = false;
-    attendanceButtons.each((i, btn) => {
-      const $btn = $(btn);
-      const btnText = $btn.text().toLowerCase();
-      const btnClass = $btn.attr('class') || '';
-      const isSelected = $btn.hasClass('selected') || $btn.hasClass('active') || $btn.hasClass('primary') || btnClass.includes('selected');
-      
-      if (btnText.includes('zusage') || btnText.includes('absage') || btnText.includes('vielleicht') ||
-          btnText.includes('teilnehmen') || btnText.includes('nicht teilnehmen')) {
-        foundAttendanceButton = true;
+      for (const script of scriptMatches) {
+        const scriptContent = script.replace(/<\/?script[^>]*>/gi, '');
         
-        if (isSelected) {
-          if (btnText.includes('zusage') || btnText.includes('teilnehmen')) {
-            return {
-              nominated: true,
-              attending: true,
-              status: 'attending',
-              emoji: '👍'
-            };
-          } else if (btnText.includes('absage') || btnText.includes('nicht teilnehmen')) {
+        // Look for specific participation status data in JavaScript (not generic keywords)
+        const hasParticipationData = scriptContent.includes('participation-button') || 
+                                   scriptContent.includes('showParticipationForm') ||
+                                   scriptContent.match(/participation.*:.*["\']?(zugesagt|abgesagt|unsicher)["\']?/i);
+        
+        if (hasParticipationData) {
+          // Look for specific status patterns - only if they're clearly related to user status
+          if (scriptContent.match(/user.*abgesagt|participation.*abgesagt|status.*abgesagt/i)) {
+            foundStatusInScript = true;
             return {
               nominated: true,
               attending: false,
               status: 'not_attending',
               emoji: '👎'
             };
-          } else if (btnText.includes('vielleicht')) {
+          } else if (scriptContent.match(/user.*zugesagt|participation.*zugesagt|status.*zugesagt/i)) {
+            foundStatusInScript = true;
             return {
               nominated: true,
-              attending: false,
-              status: 'maybe',
-              emoji: '❓'
+              attending: true,
+              status: 'attending',
+              emoji: '👍'
             };
           }
         }
       }
-    });
-
-    // Look for emoji or text-based attendance indicators in the page
-    if (bodyText.includes('👍') || bodyText.includes('Zusage')) {
-      return {
-        nominated: true,
-        attending: true,
-        status: 'attending',
-        emoji: '👍'
-      };
-    }
-    
-    if (bodyText.includes('👎') || bodyText.includes('Absage')) {
-      return {
-        nominated: true,
-        attending: false,
-        status: 'not_attending',
-        emoji: '👎'
-      };
-    }
-    
-    if (bodyText.includes('❓') || bodyText.includes('Vielleicht')) {
-      return {
-        nominated: true,
-        attending: false,
-        status: 'maybe',
-        emoji: '❓'
-      };
+      
+      // Only check for explicit participation indicators, don't default to attending
+      if (bodyText.includes('zugesagt') || bodyText.includes('teilnehmen')) {
+        return {
+          nominated: true,
+          attending: true,
+          status: 'attending',
+          emoji: '👍'
+        };
+      } else if (bodyText.includes('unsicher') || bodyText.includes('vielleicht')) {
+        return {
+          nominated: true,
+          attending: false,
+          status: 'maybe',
+          emoji: '❓'
+        };
+      } else {
+        // No participation buttons and no clear indicators - user likely not nominated
+        return {
+          nominated: false,
+          attending: false,
+          status: 'not_nominated',
+          emoji: '❌'
+        };
+      }
     }
 
-    // If we found attendance buttons but none selected, default to no response
-    if (foundAttendanceButton) {
-      return {
-        nominated: true,
-        attending: false,
-        status: 'no_response',
-        emoji: '🤷'
-      };
-    }
-
-    // Default to attending if nominated but no specific status found
+    // Default fallback - should not reach here
     return {
       nominated: true,
-      attending: true,
-      status: 'attending',
-      emoji: '👍'
+      attending: false,
+      status: 'no_response',
+      emoji: '🤷'
     };
   }
 
