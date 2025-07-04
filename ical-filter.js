@@ -2,12 +2,14 @@ const axios = require('axios');
 const ical = require('node-ical');
 const cheerio = require('cheerio');
 const { default: icalGenerator } = require('ical-generator');
+const Logger = require('./logger');
 
 class ICalFilter {
-  constructor() {
+  constructor(logger = null) {
     this.axiosInstance = null;
     this.isAuthenticated = false;
     this.authCredentials = null;
+    this.logger = logger || new Logger();
   }
 
   async loginWithCredentials(username, password) {
@@ -15,21 +17,29 @@ class ICalFilter {
     if (this.isAuthenticated && 
         this.authCredentials?.username === username && 
         this.authCredentials?.password === password) {
+      this.logger.info('Reusing existing authentication session', { username: '***' });
       return true;
     }
 
+    this.logger.info('Starting SpielerPlus authentication', { username: '***' });
+
     try {
       // Get login page and extract CSRF token
+      this.logger.info('Fetching login page');
       const loginResponse = await axios.get('https://www.spielerplus.de/site/login');
       const $ = cheerio.load(loginResponse.data);
       const csrfToken = $('input[name="_csrf"]').val();
       
       if (!csrfToken) {
+        this.logger.error('CSRF token not found in login page');
         throw new Error('Could not find CSRF token');
       }
 
+      this.logger.info('CSRF token extracted successfully');
+
       // Extract cookies from login page
       const cookies = this.extractCookies(loginResponse.headers['set-cookie'] || []);
+      this.logger.info('Login page cookies extracted', { cookieCount: (loginResponse.headers['set-cookie'] || []).length });
 
       // Submit login form
       const loginData = {
@@ -38,6 +48,7 @@ class ICalFilter {
         '_csrf': csrfToken
       };
 
+      this.logger.info('Submitting login form');
       const loginSubmitResponse = await axios.post(
         'https://www.spielerplus.de/site/login',
         new URLSearchParams(loginData).toString(),
@@ -51,6 +62,11 @@ class ICalFilter {
           validateStatus: status => status === 302 || status === 200
         }
       );
+
+      this.logger.info('Login form submitted', { 
+        statusCode: loginSubmitResponse.status,
+        hasRedirect: loginSubmitResponse.status === 302
+      });
 
       // Extract all cookies from login response
       const allCookies = this.extractCookies(loginSubmitResponse.headers['set-cookie'] || []);
@@ -67,8 +83,14 @@ class ICalFilter {
       this.isAuthenticated = true;
       this.authCredentials = { username, password };
       
+      this.logger.info('Authentication successful', { username: '***' });
       return true;
     } catch (error) {
+      this.logger.error('Authentication failed', { 
+        username: '***',
+        error: error.message,
+        statusCode: error.response?.status
+      });
       throw new Error(`Authentication failed: ${error.message}`);
     }
   }
@@ -80,18 +102,41 @@ class ICalFilter {
   }
 
   async fetchOriginalCalendar(icalUrl, username, password) {
+    const maskedUrl = this.logger.maskSensitiveData(icalUrl);
+    this.logger.info('Fetching original calendar', { url: maskedUrl });
+    
     try {
       const response = await axios.get(icalUrl, {
         auth: { username, password }
       });
-      return ical.parseICS(response.data);
+      
+      const parsedCalendar = ical.parseICS(response.data);
+      const eventCount = Object.keys(parsedCalendar).filter(key => 
+        parsedCalendar[key].type === 'VEVENT'
+      ).length;
+      
+      this.logger.info('Calendar fetched and parsed successfully', {
+        responseSize: response.data.length,
+        totalItems: Object.keys(parsedCalendar).length,
+        eventCount
+      });
+      
+      return parsedCalendar;
     } catch (error) {
+      this.logger.error('Failed to fetch calendar', {
+        url: maskedUrl,
+        error: error.message,
+        statusCode: error.response?.status
+      });
       throw new Error(`Failed to fetch calendar: ${error.message}`);
     }
   }
 
   async checkAttendanceStatus(eventUrl) {
+    const maskedUrl = this.logger.maskSensitiveData(eventUrl);
+    
     if (!this.axiosInstance || !this.isAuthenticated) {
+      this.logger.warn('Attendance check skipped - not authenticated', { url: maskedUrl });
       return {
         nominated: true,
         attending: false,
@@ -99,6 +144,8 @@ class ICalFilter {
         emoji: '🤷'
       };
     }
+
+    this.logger.info('Checking attendance status', { url: maskedUrl });
 
     try {
       // Follow redirects and handle login-by-team page
@@ -114,9 +161,13 @@ class ICalFilter {
       
       // Handle the login-by-team countdown page
       if (finalUrl.includes('/site/login-by-team')) {
+        this.logger.info('Handling login-by-team redirect page');
+        
         // Update cookies from redirect
         const newCookies = response.headers['set-cookie'];
         if (newCookies) {
+          this.logger.info('Updating cookies from redirect', { newCookieCount: newCookies.length });
+          
           const existingCookies = this.axiosInstance.defaults.headers.Cookie.split('; ');
           const updatedCookies = [...existingCookies];
           
@@ -135,6 +186,7 @@ class ICalFilter {
           this.axiosInstance.defaults.headers.Cookie = updatedCookies.join('; ');
           
           // Try again with updated cookies
+          this.logger.info('Retrying request after cookie update');
           await new Promise(resolve => setTimeout(resolve, 2000));
           const retryResponse = await this.axiosInstance.get(eventUrl);
           const $ = cheerio.load(retryResponse.data);
@@ -146,9 +198,24 @@ class ICalFilter {
       const $ = cheerio.load(response.data);
       const bodyText = $('body').text();
       
-      return this.parseAttendanceFromPage($, bodyText, eventUrl);
+      const attendanceStatus = this.parseAttendanceFromPage($, bodyText, eventUrl);
+      
+      this.logger.info('Attendance status determined', {
+        url: maskedUrl,
+        status: attendanceStatus.status,
+        emoji: attendanceStatus.emoji,
+        nominated: attendanceStatus.nominated
+      });
+      
+      return attendanceStatus;
       
     } catch (error) {
+      this.logger.error('Error checking attendance status', {
+        url: maskedUrl,
+        error: error.message,
+        statusCode: error.response?.status
+      });
+      
       return {
         nominated: true,
         attending: false,
@@ -375,8 +442,13 @@ class ICalFilter {
   async processEventsWithAttendance(events, originalEvents) {
     const processedEvents = [];
     
+    this.logger.info('Starting event processing with attendance checking', { 
+      totalEvents: events.length 
+    });
+    
     // Process events sequentially to avoid overwhelming the server
-    for (const key of events) {
+    for (let i = 0; i < events.length; i++) {
+      const key = events[i];
       const event = originalEvents[key];
       
       if (!event.url) {
@@ -384,6 +456,12 @@ class ICalFilter {
         event.summary = `👍 ${event.summary}`;
         event.attendanceStatus = { nominated: true };
         processedEvents.push(event);
+        
+        this.logger.info('Event processed without URL check', {
+          eventIndex: i + 1,
+          totalEvents: events.length,
+          eventSummary: event.summary?.substring(0, 50) + '...'
+        });
         continue;
       }
 
@@ -393,6 +471,13 @@ class ICalFilter {
         event.attendanceStatus = attendanceStatus;
         processedEvents.push(event);
         
+        this.logger.info('Event processed with attendance check', {
+          eventIndex: i + 1,
+          totalEvents: events.length,
+          status: attendanceStatus.status,
+          emoji: attendanceStatus.emoji
+        });
+        
         // Small delay to be nice to the server
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (error) {
@@ -400,13 +485,33 @@ class ICalFilter {
         event.summary = `🤷 ${event.summary}`;
         event.attendanceStatus = { nominated: true };
         processedEvents.push(event);
+        
+        this.logger.warn('Event attendance check failed, using fallback', {
+          eventIndex: i + 1,
+          totalEvents: events.length,
+          error: error.message
+        });
       }
     }
+    
+    this.logger.info('Event processing completed', { 
+      processedCount: processedEvents.length,
+      originalCount: events.length
+    });
     
     return processedEvents;
   }
 
   async filterCalendarWithBasicAuth(icalUrl, teamName, username, password, showNotNominated = false) {
+    const maskedUrl = this.logger.maskSensitiveData(icalUrl);
+    
+    this.logger.info('Starting calendar filtering process', {
+      url: maskedUrl,
+      teamName,
+      showNotNominated,
+      username: '***'
+    });
+    
     try {
       // Authenticate with SpielerPlus
       await this.loginWithCredentials(username, password);
@@ -420,16 +525,30 @@ class ICalFilter {
         return event.type === 'VEVENT' && !event.uid.includes('absence');
       });
       
+      this.logger.info('Events filtered and prepared for processing', {
+        totalOriginalItems: Object.keys(originalEvents).length,
+        validEventKeys: eventKeys.length
+      });
+      
       // Process events with attendance status
       const processedEvents = await this.processEventsWithAttendance(eventKeys, originalEvents);
       
       // Filter out not nominated events unless explicitly requested
+      const beforeFilterCount = processedEvents.length;
       const filteredEvents = processedEvents.filter(event => {
         if (event.attendanceStatus && !event.attendanceStatus.nominated && !showNotNominated) {
           return false;
         }
         return true;
       });
+      
+      const filteredOutCount = beforeFilterCount - filteredEvents.length;
+      if (filteredOutCount > 0) {
+        this.logger.info('Non-nominated events filtered out', { 
+          filteredOutCount,
+          remainingEvents: filteredEvents.length
+        });
+      }
       
       // Create calendar with proper timezone
       const calendar = this.createCalendarWithTimezone(teamName);
@@ -449,8 +568,22 @@ class ICalFilter {
         });
       });
 
-      return calendar.toString();
+      const calendarString = calendar.toString();
+      
+      this.logger.info('Calendar filtering completed successfully', {
+        finalEventCount: filteredEvents.length,
+        calendarSize: calendarString.length,
+        teamName
+      });
+
+      return calendarString;
     } catch (error) {
+      this.logger.error('Calendar filtering failed', {
+        url: maskedUrl,
+        teamName,
+        error: error.message,
+        stack: error.stack?.split('\n')[0]
+      });
       throw new Error(`Failed to filter calendar: ${error.message}`);
     }
   }

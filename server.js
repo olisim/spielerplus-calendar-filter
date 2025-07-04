@@ -6,6 +6,7 @@ require('dotenv').config();
 process.env.TZ = 'Europe/Berlin';
 
 const ICalFilter = require('./ical-filter');
+const Logger = require('./logger');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +15,38 @@ const PORT = process.env.PORT || 3000;
 const filterInstances = new Map();
 
 app.use(cors());
+
+// Logging middleware
+app.use((req, res, next) => {
+  const logger = new Logger();
+  const requestId = logger.generateRequestId();
+  logger.setRequestId(requestId);
+  
+  req.logger = logger;
+  req.startTime = Date.now();
+  
+  // Log incoming request (without sensitive data)
+  logger.info('Request started', {
+    method: req.method,
+    path: req.path,
+    userAgent: req.headers['user-agent'],
+    hasAuth: !!req.headers.authorization
+  });
+  
+  // Log response when finished
+  const originalSend = res.send;
+  res.send = function(data) {
+    const duration = Date.now() - req.startTime;
+    logger.info('Request completed', {
+      statusCode: res.statusCode,
+      duration: `${duration}ms`,
+      responseSize: data ? data.length : 0
+    });
+    originalSend.call(this, data);
+  };
+  
+  next();
+});
 
 function parseBasicAuth(authHeader) {
   if (!authHeader?.startsWith('Basic ')) {
@@ -87,10 +120,13 @@ app.get('/', (req, res) => {
 });
 
 app.get('/calendar/:icalToken', async (req, res) => {
+  const logger = req.logger;
+  
   try {
     // Parse and validate authentication
     const credentials = parseBasicAuth(req.headers.authorization);
     if (!credentials) {
+      logger.warn('Authentication missing', { endpoint: 'calendar' });
       res.set('WWW-Authenticate', 'Basic realm="SpielerPlus Calendar Filter"');
       return res.status(401).json({ 
         error: 'Authentication required',
@@ -104,26 +140,45 @@ app.get('/calendar/:icalToken', async (req, res) => {
     const teamName = req.query.name || 'Team Calendar';
     const showNotNominated = req.query.showNotNominated === 'true';
     
+    logger.info('Calendar request validated', {
+      hasToken: !!icalToken,
+      hasUserParam: !!userParam,
+      teamName,
+      showNotNominated,
+      username: credentials.username ? '***' : null
+    });
+    
     if (!userParam) {
+      logger.warn('Missing user parameter', { icalToken: '***' });
       return res.status(400).json({
         error: 'Missing user parameter',
         message: 'Please include the user parameter: ?u=YOUR_USER_ID'
       });
     }
     
-    // Build original iCal URL
+    // Build original iCal URL (masked for logging)
     const originalIcalUrl = `https://www.spielerplus.de/events/ics?t=${icalToken}&u=${userParam}`;
     
     // Get or create filter instance for this user
     const userKey = `${credentials.username}:${icalToken}`;
     let filter = filterInstances.get(userKey);
+    const isNewFilter = !filter;
     
     if (!filter) {
-      filter = new ICalFilter();
+      filter = new ICalFilter(logger.child());
       filterInstances.set(userKey, filter);
+      logger.info('Created new filter instance', { totalInstances: filterInstances.size });
+    } else {
+      logger.info('Reusing existing filter instance', { totalInstances: filterInstances.size });
     }
     
     // Generate filtered calendar
+    logger.info('Starting calendar generation', { 
+      teamName,
+      showNotNominated,
+      newFilter: isNewFilter
+    });
+    
     const filteredIcal = await filter.filterCalendarWithBasicAuth(
       originalIcalUrl, 
       teamName, 
@@ -131,6 +186,11 @@ app.get('/calendar/:icalToken', async (req, res) => {
       credentials.password, 
       showNotNominated
     );
+    
+    logger.info('Calendar generation successful', {
+      calendarSize: filteredIcal.length,
+      eventCount: (filteredIcal.match(/BEGIN:VEVENT/g) || []).length
+    });
     
     // Set response headers for calendar download
     res.set({
@@ -147,9 +207,15 @@ app.get('/calendar/:icalToken', async (req, res) => {
     
     res.send(filteredIcal);
   } catch (error) {
-    console.error('Calendar generation error:', error.message);
+    const isAuthError = error.message.includes('authentication') || error.message.includes('login');
     
-    if (error.message.includes('authentication') || error.message.includes('login')) {
+    logger.error('Calendar generation failed', {
+      errorType: isAuthError ? 'authentication' : 'processing',
+      errorMessage: error.message,
+      stack: error.stack?.split('\n')[0] // Only first line of stack for brevity
+    });
+    
+    if (isAuthError) {
       res.set('WWW-Authenticate', 'Basic realm="SpielerPlus Calendar Filter"');
       return res.status(401).json({ 
         error: 'Authentication failed',
@@ -165,7 +231,12 @@ app.get('/calendar/:icalToken', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`SpielerPlus Calendar Filter running on port ${PORT}`);
-  console.log(`Setup page: http://localhost:${PORT}`);
-  console.log(`Calendar URL format: http://localhost:${PORT}/calendar/ICAL_TOKEN?u=USER_ID&name=TEAM_NAME&showNotNominated=true`);
+  const systemLogger = new Logger();
+  systemLogger.info('SpielerPlus Calendar Filter started successfully', {
+    port: PORT,
+    timezone: process.env.TZ,
+    nodeVersion: process.version,
+    setupUrl: `http://localhost:${PORT}`,
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
